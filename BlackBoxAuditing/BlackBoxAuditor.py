@@ -15,18 +15,19 @@ from BlackBoxAuditing.data import load_data, load_from_file, load_testdf_only
 
 
 class Auditor():
-  def __init__(self):
-    self.measurers = [accuracy, BCR]
-    self.model_options = {}
-    self.verbose = True
-    self.REPAIR_STEPS = 10
-    self.RETRAIN_MODEL_PER_REPAIR = False
-    self.WRITE_ORIGINAL_PREDICTIONS = True
-    self.ModelFactory = SVM
-    self.trained_model = None
-    self.kdd = False
-    self._audits_data = {}
+  def __init__(self, model_options = {}, verbose = True, RETRAIN_MODEL_PER_REPAIR= False, WRITE_ORIGINAL_PREDICTIONS = True, ModelFactory = SVM, trained_model = None, kdd = False, _audits_data = {}):
+    self.measurers = measurers
+    self.model_options = model_options
+    self.verbose = verbose
+    self.REPAIR_STEPS = REPAIR_STEPS
+    self.RETRAIN_MODEL_PER_REPAIR = RETRAIN_MODEL_PER_REPAIR
+    self.WRITE_ORIGINAL_PREDICTIONS = WRITE_ORIGINAL_PREDICTIONS
+    self.ModelFactory = ModelFactory
+    self.trained_model = trained_model
+    self.kdd = kdd
+    self._audits_data = _audits_data
 
+	
   def __call__(self, data, output_dir=None, dump_all=False, features_to_audit=None):
     start_time = datetime.now()
 
