@@ -7,7 +7,7 @@ import copy
 
 class ModelFactory(AbstractModelFactory):
     def __init__(self, *args, **kwargs):
-        # Default DecisionTreeClassifier params
+        # Default NeuralNetworkClassifier params
         self.hidden_layer_sizes = (50,25,)
         self.activation = "relu"
         self.solver = "adam"
@@ -46,7 +46,7 @@ class ModelFactory(AbstractModelFactory):
                 self.feats_to_ignore = options.pop("feats_to_ignore")
  
         super(ModelFactory, self).__init__(*args, **kwargs)
-        self.verbose_factory_name = "DecisionTree"
+        self.verbose_factory_name = "NeuralNetwork"
 
 
         # Maps each header to the values for it's column.

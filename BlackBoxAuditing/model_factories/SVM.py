@@ -7,7 +7,7 @@ import copy
 
 class ModelFactory(AbstractModelFactory):
     def __init__(self, *args, **kwargs):
-        # Default DecisionTreeClassifier params
+        # Default SVMClassifier params
         self.C=1.0
         self.kernel="rbf"
         self.degree=3
@@ -37,7 +37,7 @@ class ModelFactory(AbstractModelFactory):
                 self.feats_to_ignore = options.pop("feats_to_ignore")
 
         super(ModelFactory, self).__init__(*args, **kwargs)
-        self.verbose_factory_name = "DecisionTree"
+        self.verbose_factory_name = "SVM"
 
 
         # Maps each header to the values for it's column.
