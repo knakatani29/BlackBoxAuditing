@@ -4,29 +4,71 @@ import pandas
 
 from datetime import datetime
 
-from BlackBoxAuditing.model_factories import SVM, DecisionTree, NeuralNetwork
-from BlackBoxAuditing.model_factories.SKLearnModelVisitor import SKLearnModelVisitor
+from BlackBoxAuditing.model_factories import SVM, DecisionTree, NeuralNetwork, ClassifierModelVisitor
 from BlackBoxAuditing.loggers import vprint
 from BlackBoxAuditing.GradientFeatureAuditor import GradientFeatureAuditor
 from BlackBoxAuditing.audit_reading import graph_audit, graph_audits, rank_audit_files, group_audit_ranks
 from BlackBoxAuditing.consistency_graph import graph_prediction_consistency
 from BlackBoxAuditing.measurements import get_conf_matrix, accuracy, BCR
 from BlackBoxAuditing.data import load_data, load_from_file, load_testdf_only
+from builder import Builder
 
 
 class Auditor():
-  def __init__(self, model_options = {}, verbose = True, RETRAIN_MODEL_PER_REPAIR= False, WRITE_ORIGINAL_PREDICTIONS = True, ModelFactory = SVM, trained_model = None, kdd = False, _audits_data = {}):
+  def __init__(self, measurers = [accuracy, BCR], model_options = {}, verbose = True, REPAIR_STEPS = 10,
+                RETRAIN_MODEL_PER_REPAIR= False, WRITE_ORIGINAL_PREDICTIONS = True, modelfactory = SVM, 
+                modelvisitor = None, kdd = False):
+
+    """
+    Uses this Auditor class to audit a model. After initializing with this initializer,
+    we can use __call__ method to audit a model. 
+    
+    Parameters
+    ----------
+
+    measurers : list of measurer (default : [accuracy, BCR])
+        List of measurers to use for Gradient Feature Auditing.
+        Check measurements.py for available measurements (accuracy and BCR as of 2020/07/28).
+
+    model_options : dictionary (default : {})
+        Model options needed to set parameters for training a model in model factory. 
+
+    verbose : boolean value (default : True)
+        Allows more detailed status updates while auditing.
+
+    REPAIR_STEPS : int (default = 10) 
+        Number of repair steps to take. 
+    
+    RETRAIN_MODEL_PER_REPAIR : boolen value (default = False)
+        Indicates if a model needs to be re-trained per repair. If false, the model will be trained once
+        before GFA (gradient feature auditing), and then won't be trained again in the process.
+
+    WRITE_ORIGINAL_PREDICTIONS : boolean value (default = True)
+        Allows writing out the original prediction.
+
+    modelfactory : ModelFactory Class (default : SVM)
+        When we don't have a pretrained model (modelvisitor), we use the method indicated here to train 
+        a model. We can either use SVM, DecisionTree, NeuralNetwork, or we can create a new class.
+
+    modelvisitor : ModelVisitor instance  (default : None)
+        Allows the use of a pretrained model. We can create an instance of ClassifierModelVisitor 
+        (refer to model_factories/ClassifierModelVisitor.py) and assign it as modelvisitor to use it.
+        When we have a modelvisitor, we don't use the method indicated in modelfactory to train a model.
+
+    kdd : boolean value (default : False)
+
+    """
     self.measurers = measurers
     self.model_options = model_options
     self.verbose = verbose
     self.REPAIR_STEPS = REPAIR_STEPS
     self.RETRAIN_MODEL_PER_REPAIR = RETRAIN_MODEL_PER_REPAIR
     self.WRITE_ORIGINAL_PREDICTIONS = WRITE_ORIGINAL_PREDICTIONS
-    self.ModelFactory = ModelFactory
-    self.trained_model = trained_model
+    self.modelfactory = modelfactory
+    self.modelvisitor = modelvisitor
     self.kdd = kdd
-    self._audits_data = _audits_data
-
+    self._audits_data = {}
+    self.trained = False
 	
   def __call__(self, data, output_dir=None, dump_all=False, features_to_audit=None):
     start_time = datetime.now()
@@ -39,46 +81,21 @@ class Auditor():
                          "full_audit" : True if features_to_audit is None else False
                         }
 
-    if self.trained_model == None:
-      """
-       ModelFactories require a `build` method that accepts some training data
-       with which to train a brand new model. This `build` method should output
-       a Model object that has a `test` method -- which, when given test data
-       in the same format as the training data, yields a confusion table detailing
-       the correct and incorrect predictions of the model.
-      """
+    if self.modelvisitor != None:
+      # Passing the pretrained model to GFA.
+      self.trained = True
+      model_to_audit = self.modelvisitor
 
-      all_data = train_set + test_set
-      model_factory = self.ModelFactory(all_data, headers, response_header,
-                                        features_to_ignore=features_to_ignore,
-                                        options=self.model_options)
-
-    if self.trained_model != None:
-      model_or_factory = self.trained_model
     elif not self.RETRAIN_MODEL_PER_REPAIR:
-      vprint("Training initial model.",self.verbose)
-      model = model_factory.build(train_set)
+      # Initial train since we are not retraining the model per repair.
+      model = Builder(measurers = self.measurers, model_options = self.model_options, 
+                verbose = self.verbose, ModelFactory = self.modelfactory)
+      model_to_audit = model.train(train_set, test_set, headers, response_header, features_to_ignore=features_to_ignore)
+      self.trained = True
 
-      # Check the quality of the initial model on verbose runs.
-      if self.verbose:
-        print("Calculating original model statistics on test data:")
-        print("\tTraining Set:")
-        train_pred_tuples = model.test(train_set)
-        train_conf_matrix = get_conf_matrix(train_pred_tuples)
-        print("\t\tConf-Matrix:", train_conf_matrix)
-        for measurer in self.measurers:
-          print("\t\t{}: {}".format(measurer.__name__, measurer(train_conf_matrix)))
-
-        print("\tTesting Set:")
-        test_pred_tuples = model.test(test_set)
-        test_conf_matrix = get_conf_matrix(test_pred_tuples)
-        print("\t\tConf-Matrix", test_conf_matrix)
-        for measurer in self.measurers:
-          print("\t\t{}: {}".format(measurer.__name__, measurer(test_conf_matrix)))
-
-      model_or_factory = model
     else:
-      model_or_factory = model_factory
+      # We retrain the model for each repair process.
+      model_to_audit = self.modelfactory
 
     # Translate the headers into indexes for the auditor.
     audit_indices_to_ignore = [headers.index(f) for f in features_to_ignore]
@@ -87,7 +104,7 @@ class Auditor():
     audit_indices_to_ignore.append(headers.index(response_header))
 
     # Prepare the auditor.
-    auditor = GradientFeatureAuditor(model_or_factory, headers, train_set, test_set,
+    auditor = GradientFeatureAuditor(model_to_audit, headers, train_set, test_set,
                                      repair_steps=self.REPAIR_STEPS, kdd=self.kdd,
                                      features_to_ignore=audit_indices_to_ignore,
                                      features_to_audit=features_to_audit,
@@ -110,8 +127,8 @@ class Auditor():
     end_time = datetime.now()
 
     # Store a summary of this experiment.
-    model_id = model_factory.factory_name if self.trained_model == None else "Pretrained"
-    model_name = model_factory.verbose_factory_name if self.trained_model == None else "Pretrained"
+    model_id = self.modelfactory.factory_name if self.modelvisitor == None else "Pretrained"
+    model_name = self.modelfactory.verbose_factory_name if self.modelvisitor == None else "Pretrained"
     summary = [
       "Audit Start Time: {}".format(start_time),
       "Audit End Time: {}".format(end_time),
@@ -135,6 +152,13 @@ class Auditor():
 
       if ranker.__name__ == "accuracy":
         self._audits_data["ranks"] = ranks
+
+    if self.trained:
+      train_pred_tuples = model_to_audit.test(train_set)
+      test_pred_tuples = model_to_audit.test(test_set)
+    else:
+      if self.WRITE_ORIGINAL_PREDICTIONS:
+        raise ValueError("The model is not pretrained. There is no original prediction.")
 
     # Dump all experiment results if opted
     if dump_all:
@@ -267,8 +291,9 @@ def test():
     test_highinfluence()
 
 def test_noinfluence():
-    auditor = Auditor()
-    auditor.trained_model = SKLearnModelVisitor(MockModelPredict1(), 1)
+    ExMockModelPredict1 = MockModelPredict1()
+    trained_model = ClassifierModelVisitor(ExMockModelPredict1, ExMockModelPredict1.predict, 1)
+    auditor = Auditor(modelvisitor=trained_model)
     df = pandas.DataFrame({"a": [1.0,2.0,3.0,4.0]})
     y_df = pandas.DataFrame({"b": [0,0,0,0]})
     data = load_testdf_only(df, y_df)
@@ -277,8 +302,9 @@ def test_noinfluence():
     print("pretrained model, no influence rank correct? --", ranks[0] == ('a',0.0))
 
 def test_highinfluence():
-    auditor = Auditor()
-    auditor.trained_model = SKLearnModelVisitor(MockModelPredict1234(), 1)
+    ExMockModelPredict1234 = MockModelPredict1234()
+    trained_model = ClassifierModelVisitor(ExMockModelPredict1234, ExMockModelPredict1234.predict, 1)
+    auditor = Auditor(modelvisitor=trained_model)
     df = pandas.DataFrame({"a": [1.0,2.0,3.0,4.0]})
     y_df = pandas.DataFrame({"b": [0,0,0,0]})
     data = load_testdf_only(df, y_df)
